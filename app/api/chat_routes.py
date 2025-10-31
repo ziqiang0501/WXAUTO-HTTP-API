@@ -125,7 +125,7 @@ def load_more_messages():
             'data': None
         }), 500
 
-@chat_bp.route('/get-all-messages', methods=['GET'])
+@chat_bp.route('/get-all-messages', methods=['POST'])
 @require_api_key
 def get_all_messages():
     """获取当前聊天窗口的所有消息"""
@@ -137,7 +137,8 @@ def get_all_messages():
             'data': None
         }), 400
 
-    who = request.args.get('who')
+    data = request.get_json()
+    who = data.get('who')
 
     if not who:
         return jsonify({
@@ -161,7 +162,7 @@ def get_all_messages():
         # 获取所有消息
         lib_name = getattr(wx_instance, '_lib_name', 'wxauto')
         if lib_name == 'wxautox':
-            messages = chat_wnd.GetAllMessage()
+            messages = chat_wnd[0].GetAllMessage()
         else:
             # wxauto库的处理方式
             if hasattr(wx_instance, '_handle_chat_window_method'):
@@ -183,6 +184,7 @@ def get_all_messages():
             }
             formatted_messages.append(formatted_msg)
 
+        logger.info(f"GetAllMessages - formatted_messages: {formatted_messages}")
         return jsonify({
             'code': 0,
             'message': '获取消息成功',
@@ -569,6 +571,106 @@ def send_message():
         return jsonify({
             'code': 3001,
             'message': f'发送消息失败: {str(e)}',
+            'data': None
+        }), 500
+
+
+@chat_bp.route('/send-quote-message', methods=['POST'])
+@require_api_key
+def send_quote_message():
+    """发送引用消息"""
+    wx_instance = wechat_manager.get_instance()
+    if not wx_instance:
+        return jsonify({
+            'code': 2001,
+            'message': '微信未初始化',
+            'data': None
+        }), 400
+
+    try:
+        data = request.get_json() or {}
+        who = data.get('who')
+        quote_message_id = data.get('quote_message_id')
+        message = data.get('message')
+        at_list = data.get('at_list')
+        timeout = data.get('timeout', 3)
+
+        if not who or not quote_message_id or message is None:
+            return jsonify({
+                'code': 4001,
+                'message': '缺少必要参数: who, quote_message_id, message',
+                'data': None
+            }), 400
+
+        # 显示聊天窗口，确保目标消息在监听列表中
+        wx_instance.ChatWith(who)
+        time.sleep(0.5)
+
+        listen = getattr(wx_instance, 'listen', None)
+        if not listen or who not in listen:
+            return jsonify({
+                'code': 3001,
+                'message': f'聊天窗口 {who} 未在监听列表中',
+                'data': None
+            }), 404
+
+        chat_wnd = listen[who]
+
+        if isinstance(chat_wnd, tuple):
+            if chat_wnd:
+                chat_wnd = chat_wnd[0]
+            else:
+                return jsonify({
+                    'code': 3001,
+                    'message': f'聊天窗口对象类型错误: {type(listen[who])}',
+                    'data': None
+                }), 500
+
+        lib_name = getattr(wx_instance, '_lib_name', 'wxauto')
+        if lib_name == 'wxautox':
+            messages = chat_wnd.GetAllMessage()
+        else:
+            if hasattr(wx_instance, '_handle_chat_window_method'):
+                messages = wx_instance._handle_chat_window_method(chat_wnd, 'GetAllMessage')
+            else:
+                messages = chat_wnd.GetAllMessage()
+
+        target_message = None
+        for msg in messages:
+            if getattr(msg, 'id', '') == quote_message_id:
+                target_message = msg
+                break
+
+        if not target_message:
+            return jsonify({
+                'code': 3001,
+                'message': f'未找到消息ID: {quote_message_id}',
+                'data': None
+            }), 404
+
+        quote_kwargs = {'text': message, 'timeout': timeout}
+        if at_list:
+            quote_kwargs['at'] = at_list
+
+        target_message.quote(**quote_kwargs)
+
+        return jsonify({
+            'code': 0,
+            'message': '引用消息发送成功',
+            'data': {
+                'who': who,
+                'quote_message_id': quote_message_id,
+                'message': message,
+                'at_list': at_list,
+                'timeout': timeout
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"发送引用消息失败: {str(e)}")
+        return jsonify({
+            'code': 3001,
+            'message': f'发送引用消息失败: {str(e)}',
             'data': None
         }), 500
 
